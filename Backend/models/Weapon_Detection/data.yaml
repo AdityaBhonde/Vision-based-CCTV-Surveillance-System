@@ -1,0 +1,12 @@
+# Set the path to the dataset folder, relative to where this data.yaml file is.
+path: Data/
+
+# The relative paths for the images and labels within the root folder.
+train: train
+val: valid
+
+# Number of classes
+nc: 2
+
+# List of class names
+names: ['gun', 'knife']

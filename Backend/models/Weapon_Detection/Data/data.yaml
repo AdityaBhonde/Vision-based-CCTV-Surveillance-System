@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['weapon']
+
+roboflow:
+  workspace: yolov7test-u13vc
+  project: weapon-detection-m7qso
+  version: 4
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/yolov7test-u13vc/weapon-detection-m7qso/dataset/4
