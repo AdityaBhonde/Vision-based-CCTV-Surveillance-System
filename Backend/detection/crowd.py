@@ -42,3 +42,4 @@ def crowd_detection():
             state.processed_frames['crowd'] = annotated
 
         time.sleep(0.01)
+
