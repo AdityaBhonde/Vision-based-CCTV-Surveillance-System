@@ -1,21 +1,42 @@
-import telegram, asyncio, cv2
+# ===================== telegram_utils.py (FINAL) =====================
+import telegram
+import asyncio
+import cv2
 
-TELEGRAM_BOT_TOKEN = "8465770268:AAHspvpjMrQJXA1Bmg0zGIISrseKhJrdcUw"
-TELEGRAM_CHAT_ID = "6594618388"
-bot = telegram.Bot(token=TELEGRAM_CHAT_ID)
+# Your Telegram credentials
+TELEGRAM_BOT_TOKEN = "7991128246:AAGEY31YvCbSfOcRuCAFfKEbv-N6lB6Fpd8"
+TELEGRAM_CHAT_ID = "1766205546"
 
-def send_telegram_alert(msg, frame=None):
+# FIXED: Correct bot initialization (YOU HAD CHAT ID HERE BY MISTAKE)
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+
+
+async def _send_async(msg, frame=None):
+    """Async internal execution"""
+    await bot.send_message(
+        chat_id=TELEGRAM_CHAT_ID,
+        text=msg,
+        parse_mode="Markdown"
+    )
+
+    # Send photo if frame exists
+    if frame is not None:
+        ok, buffer = cv2.imencode(".jpg", frame)
+        if ok:
+            await bot.send_photo(
+                chat_id=TELEGRAM_CHAT_ID,
+                photo=buffer.tobytes()
+            )
+
+
+def send_telegram_alert(msg: str, frame=None):
+    """Main function used by DB Utils"""
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
-        async def send_all():
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-            if frame is not None:
-                _, buffer = cv2.imencode(".jpg", frame)
-                await bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=buffer.tobytes())
-
-        loop.run_until_complete(send_all())
+        loop.run_until_complete(_send_async(msg, frame))
         loop.close()
+        print("[TELEGRAM] Notification sent successfully.")
     except Exception as e:
-        print(f"!!! CRITICAL TELEGRAM ERROR: {e}")
+        print(f"[TELEGRAM ERROR] {e}")
+
