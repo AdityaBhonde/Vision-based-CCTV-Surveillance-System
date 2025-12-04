@@ -1,21 +1,19 @@
 import cv2
-import telegram
 import asyncio
+import threading
+from flask import Flask, jsonify, Response
 from ultralytics import YOLO
+import telegram
 
-# --- Telegram API Configuration ---
-# Your unique bot token from @BotFather
+# =============================================
+# TELEGRAM SETUP
+# =============================================
 TELEGRAM_BOT_TOKEN = '8013386321:AAGD3EaPO3TBr5KJ8xnj274ryBb6K53fCE8'
-# Your unique chat ID from @get_id_bot
-TELEGRAM_CHAT_ID = '194798250' 
-
-# Initialize the Telegram bot object
+TELEGRAM_CHAT_ID = '194798250'
 bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
-# An async function to send a message and photo
 async def send_telegram_alert(message, image_path):
     try:
-        # Send the photo with the caption
         await bot.send_photo(
             chat_id=TELEGRAM_CHAT_ID,
             photo=open(image_path, 'rb'),
@@ -23,97 +21,152 @@ async def send_telegram_alert(message, image_path):
         )
         print("Telegram alert sent successfully!")
     except Exception as e:
-        print(f"Failed to send Telegram alert: {e}")
+        print(f"Telegram Error: {e}")
 
-def run_fast_detection():
-    try:
-        # Update this line with the correct path to your 'best.pt' file.
-        model = YOLO('C:/Users/aditya/Desktop/Hackathon/Weapon_Detection/runs/detect/train/weights/best.pt')
-        colors = {'gun': (0, 0, 255), 'knife': (0, 255, 0)}
-        
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            raise IOError("Cannot open webcam.")
 
-        # --- New variables for a more precise alert system ---
-        alert_sent = False
-        alert_timer = 0
-        alert_cooldown = 100  # Number of frames to wait before sending another alert
-        consecutive_detections = 0
-        min_consecutive_detections = 3  # Number of consecutive frames to confirm a detection
-        min_conf = 0.60  # Only send alerts for detections over 70% confidence
-        min_box_area = 5000  # Ignore detections with very small bounding boxes (in pixels)
+# =============================================
+# GLOBAL MODEL + STATUS
+# =============================================
+model = YOLO("models/Weapon_Detection/weapon.pt")
+
+VALID_WEAPONS = ['gun', 'knife', 'pistol', 'firearm', 'revolver', 'handgun']
+min_conf = 0.60              # STRICT FILTER
+min_box_area = 1500
+min_consecutive_detections = 3
+alert_cooldown = 20
+
+weapon_status = "Safe"
+crowd_count = 0
+violence_status = "Safe"
+system_active = False
+
+
+# =============================================
+# WEAPON DETECTION THREAD
+# =============================================
+def detection_thread():
+    global weapon_status, system_active
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Camera error")
+        return
+    
+    alert_sent = False
+    alert_timer = 0
+    consecutive_detections = 0
+
+    while system_active:
+        ret, frame = cap.read()
+        if not ret:
+            continue
         
+        results = model(frame, stream=True)
+        detected = False
+        final_status_string = "Safe"
+        best_conf = 0
+
+        for r in results:
+            for box in r.boxes:
+                x1, y1, x2, y2 = box.xyxy[0].int().tolist()
+                cls = int(box.cls[0].item())
+                conf = round(box.conf[0].item(), 2)
+                class_name = model.names[cls].lower()
+
+                # AREA CHECK
+                box_area = (x2 - x1) * (y2 - y1)
+                if box_area < min_box_area:
+                    continue
+
+                # STRICT CONFIDENCE CHECK
+                if class_name in VALID_WEAPONS and conf >= min_conf:
+                    detected = True
+                    best_conf = conf
+                    final_status_string = f"{class_name} ({conf})"
+
+        # =========================================
+        # FRONTEND FILTER:
+        # CONFIDENCE < 0.65 → FORCE "Safe"
+        # =========================================
+        if not detected:
+            weapon_status = "Safe"
+        else:
+            weapon_status = final_status_string
+
+        # TELEGRAM ALERT SYSTEM
+        if detected:
+            consecutive_detections += 1
+            
+            if consecutive_detections >= min_consecutive_detections and not alert_sent:
+                cv2.imwrite("alert_image.jpg", frame)
+                msg = f"🚨 *WEAPON DETECTED!* 🚨\nType: {class_name}\nAccuracy: {best_conf * 100:.2f}%"
+                asyncio.run(send_telegram_alert(msg, "alert_image.jpg"))
+                alert_sent = True
+                alert_timer = 0
+
+        else:
+            consecutive_detections = 0
+
+        if alert_sent:
+            alert_timer += 1
+            if alert_timer >= alert_cooldown:
+                alert_sent = False
+
+        # STREAM FRAME
+        _, buffer = cv2.imencode(".jpg", frame)
+        frame_bytes = buffer.tobytes()
+
+        global latest_frame
+        latest_frame = frame_bytes
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+# =============================================
+# FLASK SETUP
+# =============================================
+app = Flask(__name__)
+latest_frame = None
+
+
+@app.route("/api/start_detection", methods=["POST"])
+def start_detection():
+    global system_active
+
+    if not system_active:
+        system_active = True
+        threading.Thread(target=detection_thread, daemon=True).start()
+
+    return jsonify({"status": "started"})
+
+
+@app.route("/violence_feed")
+def violence_feed():
+    def generate():
+        global latest_frame
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            if latest_frame:
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n\r\n" + latest_frame + b"\r\n")
 
-            # Run inference on the current frame.
-            results = model(frame, stream=True)
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-            weapon_detected_this_frame = False
-            last_alert_info = None  # Track the last detected weapon for alert
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].int().tolist()
-                    conf = round(box.conf[0].item(), 2)
-                    cls = int(box.cls[0].item())
-                    class_name = model.names[cls]
 
-                    # Calculate bounding box area
-                    box_area = (x2 - x1) * (y2 - y1)
+@app.route("/get_status")
+def get_status():
+    global weapon_status, crowd_count, violence_status, system_active
 
-                    # --- Precise Alert Logic ---
-                    # Check for class, confidence, and minimum box size
-                    if class_name in ['gun', 'knife'] and conf > min_conf and box_area > min_box_area:
-                        weapon_detected_this_frame = True
-                        last_alert_info = (class_name, conf, x1, y1)  # Save info for alert
-                        color = colors.get(class_name, (255, 255, 255))
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        cv2.putText(frame, f'{class_name} {conf}', (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                        print(f"Potential {class_name} detected with confidence {conf}!")
+    return jsonify({
+        "weapon_status": weapon_status,      # STRICT FILTER APPLIED
+        "crowd_count": str(crowd_count),
+        "violence_status": violence_status,
+        "system_active": system_active
+    })
 
-            # Check for consecutive detections to confirm a genuine threat
-            if weapon_detected_this_frame and last_alert_info:
-                consecutive_detections += 1
-                if consecutive_detections >= min_consecutive_detections and not alert_sent:
-                    # Save the image to a file
-                    alert_image_path = 'alert_image.jpg'
-                    cv2.imwrite(alert_image_path, frame)
 
-                    # Use the latest detected weapon info for the alert
-                    class_name, conf, x1, y1 = last_alert_info
-                    message = f"🚨 *PRECISE WEAPON DETECTED!* 🚨\nType: {class_name}\nAccuracy: {conf * 100:.2f}%\nLocation: [{x1}, {y1}]"
-
-                    # Send the alert in a separate thread
-                    asyncio.run(send_telegram_alert(message, alert_image_path))
-
-                    alert_sent = True
-                    alert_timer = 0
-            else:
-                consecutive_detections = 0  # Reset the counter if a frame has no weapon
-
-            # Reset the alert flag after the cooldown period
-            if alert_sent:
-                alert_timer += 1
-                if alert_timer >= alert_cooldown:
-                    alert_sent = False
-
-            # Display the resulting frame.
-            cv2.imshow('Real-Time Weapon Detection', frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-    finally:
-        if 'cap' in locals() and cap.isOpened():
-            cap.release()
-        cv2.destroyAllWindows()
-
+# =============================================
+# MAIN
+# =============================================
 if __name__ == "__main__":
-    run_fast_detection()  
+    app.run(host="127.0.0.1", port=5000, debug=False)
