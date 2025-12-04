@@ -16,37 +16,45 @@ import {
   Activity,
   Zap,
   Volume2,
-  VolumeX
+  VolumeX,
 } from "lucide-react";
 
 const LiveCamera = () => {
   const [isActive, setIsActive] = useState(false);
   const [peopleCount, setPeopleCount] = useState(0);
+
+  // DETECTION STATES
   const [weaponStatus, setWeaponStatus] = useState("Safe");
   const [criminalStatus, setCriminalStatus] = useState("Safe");
-  const [threatLevel, setThreatLevel] = useState<'safe' | 'warning' | 'danger'>('safe');
+
+  // SYSTEM STATES
+  const [threatLevel, setThreatLevel] = useState<"safe" | "warning" | "danger">("safe");
   const [isBackendConnected, setIsBackendConnected] = useState(false);
   const [isSystemBooted, setIsSystemBooted] = useState(false);
 
-  // 🔔 Alarm management
+  // MEMORY: last high-confidence weapon detection (≥ 0.60)
+  const [lastHighWeaponTime, setLastHighWeaponTime] = useState(0);
+
+  // Alarm audio
   const alarmRef = useRef<HTMLAudioElement | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.7);
 
-  // Live video ref
+  // Video reference
   const combinedVideoRef = useRef<HTMLImageElement>(null);
 
-  // ---------------------- START CAMERA ----------------------
+  // ==================================================================================
+  // START CAMERA
+  // ==================================================================================
   const startCamera = async () => {
     try {
       const response = await fetch("http://127.0.0.1:5000/api/start_detection", {
         method: "POST",
       });
-      if (!response.ok) throw new Error("Failed to start detection system.");
+      if (!response.ok) throw new Error();
       setIsSystemBooted(true);
-    } catch (error) {
-      console.error("Error booting AI system:", error);
-      alert("Failed to boot AI system. Check Flask logs for errors.");
+    } catch {
+      alert("Backend not running! Please start Flask server on port 5000.");
       return;
     }
 
@@ -56,39 +64,73 @@ const LiveCamera = () => {
     }
   };
 
-  // ---------------------- STOP CAMERA ----------------------
+  // ==================================================================================
+  // STOP CAMERA
+  // ==================================================================================
   const stopCamera = () => {
     setIsActive(false);
     setPeopleCount(0);
-    setThreatLevel("safe");
     setWeaponStatus("Safe");
     setCriminalStatus("Safe");
+    setThreatLevel("safe");
+    setLastHighWeaponTime(0);
+
     if (combinedVideoRef.current) combinedVideoRef.current.src = "";
   };
 
-  // ---------------------- FETCH STATUS ----------------------
+  // ==================================================================================
+  // FETCH STATUS FROM BACKEND
+  // ==================================================================================
   const fetchStatus = async () => {
     try {
-      const response = await fetch("http://127.0.0.1:5000/get_status");
-      if (!response.ok) throw new Error("Network response was not ok");
-      const data = await response.json();
+      const res = await fetch("http://127.0.0.1:5000/get_status");
+      if (!res.ok) throw new Error();
+      const data = await res.json();
 
-      const crowdCountValue = data.crowd_count.match(/\d+/g);
-      const newPeopleCount = crowdCountValue ? parseInt(crowdCountValue[0], 10) : 0;
-      setPeopleCount(newPeopleCount);
-      setWeaponStatus(data.weapon_status);
-      setCriminalStatus(data.violence_status);
       setIsBackendConnected(true);
-      setIsSystemBooted(data.system_active);
+      setIsSystemBooted(data.system_active ?? false);
 
-      // Determine overall threat level
-      if (
-        data.weapon_status.toUpperCase().includes("UNSAFE") ||
-        data.violence_status.toUpperCase().includes("ALERT") ||
-        data.violence_status.toUpperCase().includes("CRIMINAL")
-      ) {
+      // -------- CROWD COUNT --------
+      const matchCrowd = (data.crowd_count ?? "").match(/\d+/);
+      const crowd = matchCrowd ? parseInt(matchCrowd[0], 10) : 0;
+      setPeopleCount(crowd);
+
+      // =====================================================
+      // WEAPON DETECTION WITH CONFIDENCE FILTER (≥ 0.60)
+      // =====================================================
+      let rawWeaponString = data.weapon_status ? data.weapon_status : "Safe";
+      let extractedConf = 0;
+
+      // Extract confidence from string like "Knife detected (0.62)"
+      const wm = rawWeaponString.match(/\((.*?)\)/);
+      if (wm) extractedConf = parseFloat(wm[1]);
+
+      // Only show weapon threat if confidence >= 0.60
+      if (extractedConf >= 0.60) {
+        setWeaponStatus(rawWeaponString);
+        setLastHighWeaponTime(Date.now()); // Remember when we saw high-confidence weapon
+      } else {
+        setWeaponStatus("Safe");
+      }
+
+      // -------- CRIMINAL DETECTION --------
+      setCriminalStatus(data.violence_status ?? "Safe");
+
+      // =====================================================
+      // THREAT LEVEL CALCULATION
+      // =====================================================
+      // Check if we recently saw a high-confidence weapon (within last 1.5 seconds)
+      const weaponThreat = Date.now() - lastHighWeaponTime < 1500;
+
+      // Check if criminal activity detected
+      const criminalThreat =
+        (data.violence_status ?? "").toUpperCase().includes("CRIMINAL") ||
+        (data.violence_status ?? "").toUpperCase().includes("ALERT");
+
+      // Set threat level based on all conditions
+      if (weaponThreat || criminalThreat) {
         setThreatLevel("danger");
-      } else if (newPeopleCount > 35) {
+      } else if (crowd > 35) {
         setThreatLevel("warning");
       } else {
         setThreatLevel("safe");
@@ -99,207 +141,216 @@ const LiveCamera = () => {
     }
   };
 
+  // Poll backend every 1 second
   useEffect(() => {
-    const pollInterval = setInterval(fetchStatus, 1000);
-    return () => clearInterval(pollInterval);
-  }, []);
+    fetchStatus();
+    const timer = setInterval(fetchStatus, 1000);
+    return () => clearInterval(timer);
+  }, [lastHighWeaponTime]); // Re-run when weapon time changes
 
-  // ---------------------- ALARM LOGIC ----------------------
+  // ==================================================================================
+  // ALARM SYSTEM - Rings when ANY threat is detected
+  // ==================================================================================
   useEffect(() => {
     if (!alarmRef.current) return;
 
-    const shouldPlayAlarm =
-      threatLevel === "danger" ||
-      weaponStatus.toUpperCase().includes("UNSAFE") ||
-      criminalStatus.toUpperCase().includes("ALERT") ||
+    // Check if we recently detected weapon (within 1.5 seconds)
+    const weaponThreat = Date.now() - lastHighWeaponTime < 1500;
+
+    // Check if criminal detected
+    const criminalThreat =
       criminalStatus.toUpperCase().includes("CRIMINAL") ||
-      peopleCount > 35;
+      criminalStatus.toUpperCase().includes("ALERT");
+
+    // Check if crowd is too high
+    const crowdThreat = peopleCount > 35;
+
+    // Play alarm if ANY threat exists
+    const shouldPlay = weaponThreat || criminalThreat || crowdThreat;
 
     alarmRef.current.volume = isMuted ? 0 : volume;
 
-    if (shouldPlayAlarm && !isMuted) {
+    if (shouldPlay && !isMuted) {
+      alarmRef.current.loop = true;
       if (alarmRef.current.paused) {
-        alarmRef.current.loop = true;
-        alarmRef.current.play().catch((err) => console.warn("Audio play blocked:", err));
+        alarmRef.current.play().catch(() => {});
       }
     } else {
       alarmRef.current.pause();
       alarmRef.current.currentTime = 0;
     }
-  }, [threatLevel, weaponStatus, criminalStatus, peopleCount, isMuted, volume]);
+  }, [criminalStatus, lastHighWeaponTime, peopleCount, isMuted, volume]);
 
-  // ---------------------- STYLING HELPERS ----------------------
-  const getThreatColor = () => {
-    switch (threatLevel) {
-      case "danger":
-        return "text-red-400 border-red-400";
-      case "warning":
-        return "text-yellow-400 border-yellow-400";
-      default:
-        return "text-green-400 border-green-400";
-    }
-  };
+  // ==================================================================================
+  // UI HELPERS
+  // ==================================================================================
+  const getThreatColor = () =>
+    threatLevel === "danger"
+      ? "text-red-400 border-red-400"
+      : threatLevel === "warning"
+      ? "text-yellow-400 border-yellow-400"
+      : "text-green-400 border-green-400";
 
-  const getThreatBg = () => {
-    switch (threatLevel) {
-      case "danger":
-        return "bg-red-500/10";
-      case "warning":
-        return "bg-yellow-500/10";
-      default:
-        return "bg-green-500/10";
-    }
-  };
+  const getThreatBg = () =>
+    threatLevel === "danger"
+      ? "bg-red-500/10"
+      : threatLevel === "warning"
+      ? "bg-yellow-500/10"
+      : "bg-green-500/10";
 
-  // ---------------------- MAIN JSX ----------------------
+  // Check individual threats for alerts
+  const hasWeaponThreat = Date.now() - lastHighWeaponTime < 1500;
+  const hasCriminalThreat =
+    criminalStatus.toUpperCase().includes("CRIMINAL") ||
+    criminalStatus.toUpperCase().includes("ALERT");
+  const hasCrowdThreat = peopleCount > 35;
+
+  // ==================================================================================
+  // UI RENDER
+  // ==================================================================================
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-secondary/20">
       <Navigation />
 
-      {/* 🔔 Hidden alarm sound */}
       <audio ref={alarmRef} src="/sounds/alarm.mp3" preload="auto" />
 
       <main className="pt-20 pb-8">
         <div className="container mx-auto px-4">
-          {/* Header */}
-          <div className="text-center mb-8 animate-fade-in">
+
+          {/* HEADER */}
+          <div className="text-center mb-8">
             <div className="flex items-center justify-center gap-3 mb-4">
-              <Shield className="h-12 w-12 text-primary animate-glow-pulse" />
-              <h1 className="text-4xl md:text-6xl font-bold bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
+              <Shield className="h-12 w-12 text-primary" />
+              <h1 className="text-6xl font-bold bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
                 Live Surveillance
               </h1>
             </div>
-            <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-              Advanced AI-powered weapon, criminal, and crowd monitoring system
+            <p className="text-lg text-muted-foreground">
+              Real-time AI Monitoring: Weapons • Criminals • Crowd Density
             </p>
           </div>
 
-          {/* Status Dashboard */}
+          {/* STATUS CARDS */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            {/* Threat Level */}
-            <Card className={`border-2 transition-all duration-300 ${getThreatColor()} ${getThreatBg()}`}>
-              <CardHeader className="pb-2">
+
+            {/* THREAT CARD */}
+            <Card className={`border-2 ${getThreatColor()} ${getThreatBg()}`}>
+              <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Shield className="h-5 w-5" />
-                  Threat Level
+                  <Shield className="h-5 w-5" /> Threat Level
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold capitalize">{threatLevel}</div>
+                <div className="text-3xl font-bold capitalize">{threatLevel}</div>
                 <div className="text-sm text-muted-foreground">System Status</div>
               </CardContent>
             </Card>
 
-            {/* People */}
-            <Card className="border border-primary/20 bg-gradient-to-br from-card to-primary/5">
-              <CardHeader className="pb-2">
+            {/* CROWD CARD */}
+            <Card className={`border ${hasCrowdThreat ? 'border-yellow-400/50 bg-yellow-500/10' : 'border-blue-400/20 bg-blue-500/5'}`}>
+              <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Users className="h-5 w-5 text-blue-400" />
-                  People Detected
+                  <Users className="h-5 w-5 text-blue-400" /> Crowd Count
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-blue-400">{peopleCount}</div>
-                <div className="text-sm text-muted-foreground">In current frame</div>
+                <div className={`text-3xl font-bold ${hasCrowdThreat ? 'text-yellow-400' : 'text-blue-400'}`}>
+                  {peopleCount}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {hasCrowdThreat ? "⚠ High Density" : "Normal"}
+                </div>
               </CardContent>
             </Card>
 
-            {/* Weapon */}
-            <Card className="border border-accent/20 bg-gradient-to-br from-card to-accent/5">
-              <CardHeader className="pb-2">
+            {/* WEAPON CARD */}
+            <Card className={`border ${hasWeaponThreat ? 'border-red-400/50 bg-red-500/10' : 'border-red-400/20 bg-red-500/5'}`}>
+              <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Target className="h-5 w-5 text-accent" />
-                  Weapon Status
+                  <Target className="h-5 w-5 text-red-400" /> Weapon Status
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-accent">
-                  {weaponStatus.toUpperCase().includes("UNSAFE") ? "UNSAFE" : "SAFE"}
+                <div className={`text-3xl font-bold text-red-400 ${hasWeaponThreat ? 'animate-pulse' : ''}`}>
+                  {weaponStatus !== "Safe" ? "UNSAFE" : "SAFE"}
                 </div>
                 <div className="text-sm text-muted-foreground">{weaponStatus}</div>
               </CardContent>
             </Card>
 
-            {/* Backend */}
-            <Card className="border border-primary/20 bg-gradient-to-br from-card to-primary/5">
-              <CardHeader className="pb-2">
+            {/* BACKEND STATUS */}
+            <Card className="border border-primary/20 bg-primary/5">
+              <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Activity className="h-5 w-5 text-primary" />
-                  Backend Status
+                  <Activity className="h-5 w-5 text-primary" /> Backend Status
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-2">
-                  <div className={`w-3 h-3 rounded-full ${isBackendConnected ? "bg-green-400 animate-pulse" : "bg-red-400"}`}></div>
-                  <span className="text-sm font-medium">
-                    {isBackendConnected ? (isSystemBooted ? "RUNNING" : "ONLINE (Models OFF)") : "DISCONNECTED"}
+                  <div className={`w-3 h-3 rounded-full ${
+                    isBackendConnected ? "bg-green-400 animate-pulse" : "bg-red-400"
+                  }`}></div>
+                  <span className="text-sm">
+                    {isBackendConnected
+                      ? (isSystemBooted ? "RUNNING" : "ONLINE")
+                      : "OFFLINE"}
                   </span>
                 </div>
-                <div className="text-sm text-muted-foreground">Port 5000</div>
               </CardContent>
             </Card>
           </div>
 
-          {/* Main Camera Interface */}
+          {/* CAMERA + RIGHT PANEL */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <div className="lg:col-span-2 space-y-6">
-              <Card className="border border-primary/20 bg-gradient-to-br from-card to-primary/5 overflow-hidden">
+
+            {/* CAMERA FEED */}
+            <div className="lg:col-span-2">
+              <Card className="border border-primary/20 bg-primary/5 overflow-hidden">
                 <CardHeader>
                   <CardTitle className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Camera className="h-5 w-5" />
-                      Live Feed (AI Processed)
+                      <Camera className="h-5 w-5" /> Live Feed
                     </div>
-                    <div className="flex gap-2 items-center">
-                      {/* Alarm Controls */}
-                      <Button
-                        onClick={() => setIsMuted(!isMuted)}
-                        variant="secondary"
-                        className="gap-1"
-                        title={isMuted ? "Unmute Alarm" : "Mute Alarm"}
-                      >
-                        {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                    <div className="flex items-center gap-2">
+
+                      <Button onClick={() => setIsMuted(!isMuted)} variant="secondary">
+                        {isMuted ? <VolumeX /> : <Volume2 />}
                       </Button>
 
                       <input
                         type="range"
-                        min="0"
-                        max="1"
-                        step="0.1"
+                        min="0" max="1" step="0.1"
                         value={volume}
                         onChange={(e) => setVolume(parseFloat(e.target.value))}
-                        className="w-20 accent-primary"
+                        className="w-20"
                       />
 
                       {isBackendConnected && !isActive ? (
-                        <Button onClick={startCamera} variant="hero" className="gap-2">
-                          <Camera className="h-4 w-4" />
-                          {isSystemBooted ? "Start Monitoring" : "Start Monitoring (Boot AI)"}
+                        <Button variant="hero" onClick={startCamera}>
+                          <Camera className="mr-1" /> Start Monitoring
                         </Button>
                       ) : (
-                        <Button onClick={stopCamera} variant="destructive" className="gap-2" disabled={!isActive}>
-                          <CameraOff className="h-4 w-4" />
-                          Stop Monitoring
+                        <Button variant="destructive" disabled={!isActive} onClick={stopCamera}>
+                          <CameraOff className="mr-1" /> Stop
                         </Button>
                       )}
                     </div>
                   </CardTitle>
                 </CardHeader>
+
                 <CardContent className="p-0">
                   <div className="relative bg-black/50 aspect-video">
                     {isActive ? (
                       <img
-                        key={isActive ? "live" : "offline"}
                         ref={combinedVideoRef}
                         className="w-full h-full object-cover"
-                        alt="AI Processed Video Feed"
-                        src={"http://127.0.0.1:5000/violence_feed"}
+                        src="http://127.0.0.1:5000/violence_feed"
+                        alt="Live Feed"
                       />
                     ) : (
-                      <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                        <CameraOff className="h-16 w-16 mb-4 opacity-50" />
-                        <p className="text-lg font-medium">Video Stream Offline</p>
-                        <p className="text-sm">Click Start Monitoring to begin AI processing.</p>
+                      <div className="flex flex-col items-center justify-center h-full">
+                        <CameraOff className="h-16 w-16 opacity-50" />
+                        <p className="text-lg">Video Offline</p>
                       </div>
                     )}
                   </div>
@@ -307,109 +358,122 @@ const LiveCamera = () => {
               </Card>
             </div>
 
-            {/* Detection Panels */}
-            <div className="space-y-6">
-              {threatLevel !== "safe" && (
-                <Alert className="border-red-400 bg-red-500/10 animate-pulse">
+            {/* RIGHT PANEL */}
+            <div className="space-y-4">
+
+              {/* ============ WEAPON ALERT ============ */}
+              {hasWeaponThreat && (
+                <Alert className="border-red-400 bg-red-600/10 animate-pulse">
                   <AlertTriangle className="h-4 w-4 text-red-400" />
-                  <AlertDescription className="text-red-400">
-                    {threatLevel === "danger"
-                      ? (weaponStatus.toUpperCase().includes("UNSAFE") ||
-                        criminalStatus.toUpperCase().includes("ALERT") ||
-                        criminalStatus.toUpperCase().includes("CRIMINAL"))
-                        ? "CRITICAL THREAT DETECTED - Security team notified"
-                        : "UNKNOWN DANGER"
-                      : "HIGH CROWD DENSITY - Monitor situation"}
+                  <AlertDescription className="text-red-400 font-semibold">
+                    🚨 WEAPON DETECTED — SECURITY ALERT ISSUED
                   </AlertDescription>
                 </Alert>
               )}
 
-              {/* Status Cards */}
-              <Card className="border border-primary/20 bg-gradient-to-br from-card to-primary/5">
+              {/* ============ CRIMINAL ALERT ============ */}
+              {hasCriminalThreat && (
+                <Alert className="border-red-400 bg-red-600/10 animate-pulse">
+                  <AlertTriangle className="h-4 w-4 text-red-400" />
+                  <AlertDescription className="text-red-400 font-semibold">
+                    🚨 CRIMINAL ACTIVITY DETECTED — SECURITY ALERT ISSUED
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* ============ CROWD ALERT ============ */}
+              {hasCrowdThreat && !hasWeaponThreat && !hasCriminalThreat && (
+                <Alert className="border-yellow-400 bg-yellow-600/10 animate-pulse">
+                  <AlertTriangle className="h-4 w-4 text-yellow-400" />
+                  <AlertDescription className="text-yellow-400 font-semibold">
+                    ⚠ HIGH CROWD DENSITY ({peopleCount} people) — Monitor situation
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* STATUS LIST */}
+              <Card className="border border-primary/20 bg-primary/5">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <AlertTriangle className="h-5 w-5 text-amber-400" />
-                    Live Status
+                    <AlertTriangle className="h-5 w-5 text-yellow-400" /> Live Status
                   </CardTitle>
                 </CardHeader>
+
                 <CardContent className="space-y-3">
-                  {/* Crowd */}
-                  <div className="flex items-center justify-between p-3 bg-secondary/30 rounded-lg border border-primary/10">
+
+                  {/* CROWD STATUS */}
+                  <div className="flex justify-between p-3 bg-secondary/20 rounded-lg border">
                     <div className="flex items-center gap-3">
                       <Users className="h-4 w-4 text-blue-400" />
                       <div>
-                        <div className="font-medium text-sm">Crowd Detection</div>
-                        <div className="text-xs text-muted-foreground">{peopleCount > 35 ? "Alert" : "Safe"}</div>
+                        <div className="text-sm font-medium">Crowd Detection</div>
+                        <div className="text-xs text-muted-foreground">
+                          {hasCrowdThreat ? "⚠ Alert" : "✓ Safe"}
+                        </div>
                       </div>
                     </div>
-                    <Badge variant={peopleCount > 35 ? "destructive" : "secondary"}>{peopleCount}</Badge>
+                    <Badge variant={hasCrowdThreat ? "destructive" : "secondary"}>
+                      {peopleCount}
+                    </Badge>
                   </div>
 
-                  {/* Weapon */}
-                  <div className="flex items-center justify-between p-3 bg-secondary/30 rounded-lg border border-primary/10">
+                  {/* WEAPON STATUS */}
+                  <div className="flex justify-between p-3 bg-secondary/20 rounded-lg border">
                     <div className="flex items-center gap-3">
                       <Target className="h-4 w-4 text-red-400" />
                       <div>
-                        <div className="font-medium text-sm">Weapon Detection</div>
+                        <div className="text-sm font-medium">Weapon Detection</div>
                         <div className="text-xs text-muted-foreground">{weaponStatus}</div>
                       </div>
                     </div>
-                    <Badge variant={weaponStatus.toUpperCase().includes("UNSAFE") ? "destructive" : "secondary"}>
-                      {weaponStatus.toUpperCase().includes("UNSAFE") ? "Threat" : "Safe"}
+                    <Badge variant={weaponStatus !== "Safe" ? "destructive" : "secondary"}>
+                      {weaponStatus !== "Safe" ? "🚨 Threat" : "✓ Safe"}
                     </Badge>
                   </div>
 
-                  {/* Criminal */}
-                  <div className="flex items-center justify-between p-3 bg-secondary/30 rounded-lg border border-primary/10">
+                  {/* CRIMINAL */}
+                  <div className="flex justify-between p-3 bg-secondary/20 rounded-lg border">
                     <div className="flex items-center gap-3">
                       <Target className="h-4 w-4 text-red-400" />
                       <div>
-                        <div className="font-medium text-sm">Criminal Detection</div>
+                        <div className="text-sm font-medium">Criminal Detection</div>
                         <div className="text-xs text-muted-foreground">{criminalStatus}</div>
                       </div>
                     </div>
-                    <Badge
-                      variant={
-                        criminalStatus.toUpperCase().includes("CRIMINAL") ||
-                        criminalStatus.toUpperCase().includes("ALERT")
-                          ? "destructive"
-                          : "secondary"
-                      }
-                    >
-                      {criminalStatus.toUpperCase().includes("CRIMINAL") ||
-                      criminalStatus.toUpperCase().includes("ALERT")
-                        ? "Threat"
-                        : "Safe"}
+                    <Badge variant={hasCriminalThreat ? "destructive" : "secondary"}>
+                      {hasCriminalThreat ? "🚨 Threat" : "✓ Safe"}
                     </Badge>
+                  </div>
+
+                </CardContent>
+              </Card>
+
+              {/* LOCATION */}
+              <Card className="border border-primary/20 bg-primary/5">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <MapPin className="h-5 w-5 text-green-400" /> Location & Time
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <div className="flex items-center gap-2 text-sm">
+                    <MapPin className="h-4 w-4 text-green-400" />
+                    Sector 7-G, Main Entrance
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Clock className="h-4 w-4 text-blue-400" />
+                    {new Date().toLocaleString()}
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Zap className="h-4 w-4 text-yellow-400" />
+                    System Online — 99.9% Uptime
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Location */}
-              <Card className="border border-primary/20 bg-gradient-to-br from-card to-primary/5">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <MapPin className="h-5 w-5 text-green-400" />
-                    Location & Time
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <MapPin className="h-4 w-4 text-green-400" />
-                    <span>Sector 7-G, Main Entrance</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-sm">
-                    <Clock className="h-4 w-4 text-blue-400" />
-                    <span>{new Date().toLocaleString()}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-sm">
-                    <Zap className="h-4 w-4 text-yellow-400" />
-                    <span>System Online - 99.9% Uptime</span>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           </div>
+
         </div>
       </main>
     </div>
