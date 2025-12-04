@@ -7,11 +7,16 @@ model = YOLO('best.pt')
 def count_people_in_frame(frame):
     results = model.predict(frame)
     people_count = 0
+
     for r in results:
         for box in r.boxes:
-            # Use r.names for correct mapping
-            if r.names[int(box.cls[0])] == 'person':
+            cls = int(box.cls[0].item())
+            conf = float(box.conf[0].item())
+
+            # CONFIDENCE FILTER ADDED HERE
+            if conf >= 0.40 and r.names[cls] == 'person':
                 people_count += 1
+
     return people_count
 
 def main():
@@ -35,7 +40,10 @@ def main():
         print(f"Total people detected: {people_count}")
 
         # Annotate and display the frame
-        cv2.putText(frame, f"People: {people_count}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+        cv2.putText(frame, f"People: {people_count}",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                    (255, 255, 0), 2)
+
         cv2.imshow("Crowd Detection", frame)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
