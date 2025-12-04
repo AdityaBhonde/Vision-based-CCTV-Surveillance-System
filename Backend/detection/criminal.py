@@ -116,3 +116,4 @@ def criminal_detection():
             state.processed_frames['violence'] = annotated
 
         time.sleep(0.01)
+
