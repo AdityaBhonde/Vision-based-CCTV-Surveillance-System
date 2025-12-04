@@ -293,3 +293,14 @@ This is a **production-ready surveillance system**, capable of being deployed in
 
 ---
 
+<img width="1900" height="1008" alt="Screenshot 2025-12-04 150816" src="https://github.com/user-attachments/assets/ccbfd8ab-3278-42f2-b875-3dd9aaf49810" />
+<img width="1917" height="1079" alt="Screenshot 2025-12-04 145112" src="https://github.com/user-attachments/assets/3c14c3a7-3d88-4edf-b7fc-0a3d964848d8" />
+<img width="1898" height="875" alt="Screenshot 2025-12-04 150433" src="https://github.com/user-attachments/assets/9ea1c9cf-5b86-4c1d-8701-87bbde92612a" />
+<img width="1901" height="1079" alt="Screenshot 2025-12-04 040736" src="https://github.com/user-attachments/assets/88529851-87ce-43d2-a405-ccd29b24d324" />
+<img width="1884" height="1079" alt="Screenshot 2025-12-04 040749" src="https://github.com/user-attachments/assets/0bff687b-1db5-467a-b13f-827848f56a6a" />
+<img width="1258" height="720" alt="Screenshot 2025-12-04 153522" src="https://github.com/user-attachments/assets/1b894c22-dcfc-4025-95d9-0735b01d2509" />
+
+
+
+
+
